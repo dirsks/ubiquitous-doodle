@@ -495,7 +495,7 @@ end
 local redzlib   = _SafeLoad("https://raw.githubusercontent.com/LotuxHub/LotuxHub/refs/heads/main/Library/LotuxLibrary.lua",  "LotuxLibrary", 3)
 local QuestData = _SafeLoad("https://raw.githubusercontent.com/LotuxHub/LotuxHub/refs/heads/main/DevCopy/BloxFruits/Quests.lua",   "Quests",        3)
 local Config    = _SafeLoad("https://raw.githubusercontent.com/LotuxHub/LotuxHub/refs/heads/main/DevCopy/BloxFruits/Config.lua",    "Config",        3)
-local Functions = _SafeLoad("https://raw.githubusercontent.com/LotuxHub/LotuxHub/refs/heads/main/DevCopy/BloxFruits/Functions.lua", "Functions",     3)
+local Functions = _SafeLoad("https://raw.githubusercontent.com/dirsks/ubiquitous-doodle/refs/heads/main/Functions.lua", "Functions",     3)
 
 -- =====================================================
 -- SERVICES
@@ -702,52 +702,100 @@ end)
 -- =====================================================
 local currentTarget = nil
 
+local _acLastLog = ""
+local _acLogCount = 0
+local function _acLog(msg)
+    if msg ~= _acLastLog then
+        _acLastLog = msg
+        _acLogCount = 0
+        print("[AutoClick] " .. msg)
+    else
+        _acLogCount = _acLogCount + 1
+        if _acLogCount % 50 == 0 then
+            print("[AutoClick] (repetindo " .. _acLogCount .. "x) " .. msg)
+        end
+    end
+end
+
 task.spawn(function()
     while task.wait(0.12) do
         if not Config.AutoClick then continue end
+
         local char = Player.Character
-        if not char or not HumanoidRootPart then continue end
-        if Humanoid and Humanoid.Health <= 0 then continue end
+        if not char then
+            _acLog("SKIP: Player.Character e nil")
+            continue
+        end
+        local localHrp = char:FindFirstChild("HumanoidRootPart")
+        local localHum = char:FindFirstChildOfClass("Humanoid")
+        if not localHrp then
+            _acLog("SKIP: HumanoidRootPart nao encontrado no char")
+            continue
+        end
+        if not localHum then
+            _acLog("SKIP: Humanoid nao encontrado no char")
+            continue
+        end
+        if localHum.Health <= 0 then
+            _acLog("SKIP: Player morto (Health <= 0)")
+            continue
+        end
 
         local bestTarget, bestDist = nil, math.huge
 
         local enemies = workspace:FindFirstChild("Enemies")
-        if enemies then
-            for _, obj in ipairs(enemies:GetChildren()) do
-                if obj:IsA("Model") and obj ~= char then
-                    local hum = obj:FindFirstChildOfClass("Humanoid")
-                    local hrp = obj:FindFirstChild("HumanoidRootPart")
-                    if hum and hrp and hum.Health > 0 then
-                        local d = (hrp.Position - HumanoidRootPart.Position).Magnitude
-                        if d < bestDist then bestDist = d; bestTarget = obj end
+        if not enemies then
+            _acLog("SKIP: workspace.Enemies nao existe")
+            continue
+        end
+
+        local totalEnemies = 0
+        for _, obj in ipairs(enemies:GetChildren()) do
+            if obj:IsA("Model") and obj ~= char then
+                local hum = obj:FindFirstChildOfClass("Humanoid")
+                local hrp = obj:FindFirstChild("HumanoidRootPart")
+                if hum and hrp and hum.Health > 0 then
+                    totalEnemies = totalEnemies + 1
+                    local d = (hrp.Position - localHrp.Position).Magnitude
+                    if d < bestDist then bestDist = d; bestTarget = obj end
+                end
+            end
+        end
+
+        if Config.KillAura or Config.EnabledPvP then
+            for _, otherPlayer in ipairs(Players:GetPlayers()) do
+                if otherPlayer ~= Player then
+                    local otherChar = otherPlayer.Character
+                    if otherChar then
+                        local hum = otherChar:FindFirstChildOfClass("Humanoid")
+                        local hrp = otherChar:FindFirstChild("HumanoidRootPart")
+                        if hum and hrp and hum.Health > 0 then
+                            local d = (hrp.Position - localHrp.Position).Magnitude
+                            if d < bestDist then bestDist = d; bestTarget = otherChar end
+                        end
                     end
                 end
             end
         end
 
-        for _, otherPlayer in ipairs(Players:GetPlayers()) do
-            if otherPlayer ~= Player then
-                local otherChar = otherPlayer.Character
-                if otherChar then
-                    local hum = otherChar:FindFirstChildOfClass("Humanoid")
-                    local hrp = otherChar:FindFirstChild("HumanoidRootPart")
-                    if hum and hrp and hum.Health > 0 then
-                        local d = (hrp.Position - HumanoidRootPart.Position).Magnitude
-                        if d < bestDist then bestDist = d; bestTarget = otherChar end
-                    end
-                end
-            end
+        if not bestTarget then
+            _acLog("SKIP: Nenhum inimigo vivo encontrado (total na pasta: " .. totalEnemies .. ")")
+            continue
         end
 
-        if not bestTarget then continue end
         local hrpTarget = bestTarget:FindFirstChild("HumanoidRootPart")
-        if not hrpTarget then continue end
+        if not hrpTarget then
+            _acLog("SKIP: alvo '" .. bestTarget.Name .. "' sem HumanoidRootPart")
+            continue
+        end
 
-        -- FIX: NÃO rotaciona o personagem para o alvo (removido CFrame.lookAt)
-        -- O ataque funciona sem precisar virar o personagem
-        local dist = (hrpTarget.Position - HumanoidRootPart.Position).Magnitude
-        if dist > 25 then continue end
+        local dist = (hrpTarget.Position - localHrp.Position).Magnitude
+        if dist > 60 then
+            _acLog("SKIP: alvo '" .. bestTarget.Name .. "' longe demais (" .. math.floor(dist) .. " studs, max 60)")
+            continue
+        end
 
+        _acLog("ATACANDO: '" .. bestTarget.Name .. "' | dist: " .. math.floor(dist) .. " studs")
         Functions.FastAttack(bestTarget, Config, NotAutoEquip)
     end
 end)
@@ -847,11 +895,25 @@ task.spawn(function()
                 local quest = Functions.GetQuestForLevel(QuestList, CurrentSea, Player)
                 if not quest then farmRunning = false; return end
 
-                -- Submerged Island (level 2600+): precisa de remote especial, nao requestEntrance
+                -- Submerged Island (level 2600+): usa remote especial, nao requestEntrance nem FlyTo
                 local isSubmerged = string.find(quest.NameQuest or "", "SubmergedQuest", 1, true) ~= nil
                 if isSubmerged then
-                    Functions.TravelToSubmergedIsland()
-                    task.wait(1)
+                    -- So viaja se ainda nao estiver la embaixo (Y < -500)
+                    local jaEstaLa = HumanoidRootPart and HumanoidRootPart.Position.Y < -500
+                    if not jaEstaLa then
+                        print("[AutoFarm] Indo para Submerged Island via remote...")
+                        local chegou = Functions.TravelToSubmergedIsland(Config)
+                        if not chegou then
+                            warn("[AutoFarm] Nao conseguiu chegar na Submerged Island, tentando novamente...")
+                            farmRunning = false
+                            return
+                        end
+                        task.wait(1.5)
+                    end
+                    -- Atualiza HRP apos teleporte
+                    local char2 = Player.Character
+                    if not char2 then farmRunning = false; return end
+                    HumanoidRootPart = char2:FindFirstChild("HumanoidRootPart") or HumanoidRootPart
                 elseif quest.RequestEntrance and HumanoidRootPart then
                     if (quest.CFrameMon.Position - HumanoidRootPart.Position).Magnitude > 10000 then
                         pcall(function() (CommF_ or {}):InvokeServer("requestEntrance", quest.RequestEntrance) end)
@@ -869,11 +931,15 @@ task.spawn(function()
 
                 if not questVisible then
                     currentTarget = nil
-                    NoClip.value = false
 
                     if HumanoidRootPart and (quest.CFrameQuest.Position - HumanoidRootPart.Position).Magnitude > 8 then
+                        -- Mantem NoClip ativo se estiver na Submerged (Y < -500) para nao afundar
+                        local naSubmerged = HumanoidRootPart.Position.Y < -500
+                        if not naSubmerged then NoClip.value = false end
                         NoClip.value = true
                         Functions.FlyToPosition(quest.CFrameQuest, TweenService, Config, isTeleporting, NotAutoEquip)
+                        NoClip.value = false
+                    else
                         NoClip.value = false
                     end
 
@@ -952,22 +1018,13 @@ task.spawn(function()
                             end
                         else
                             currentTarget = nil
+                            -- Voa ate a posicao dos mobs (CFrameMon) com NoClip ativo
+                            -- Funciona tanto na superficie quanto na Submerged Island
                             NoClip.value = true
                             Functions.FlyToPosition(quest.CFrameMon * CFrame.new(0, Config.FlyOffset, 0),
                                 TweenService, Config, isTeleporting, NotAutoEquip)
                             NoClip.value = false
-
-                            local rs = game:GetService("ReplicatedStorage")
-                            if rs:FindFirstChild(quest.Mob) then
-                                local rsMob = rs[quest.Mob]
-                                local rsHrp = rsMob:FindFirstChild("HumanoidRootPart")
-                                if rsHrp then
-                                    NoClip.value = true
-                                    Functions.FlyToPosition(rsHrp.CFrame * CFrame.new(0, 20, 0),
-                                        TweenService, Config, isTeleporting, NotAutoEquip)
-                                    NoClip.value = false
-                                end
-                            end
+                            task.wait(1)
                         end
                     end
                 end
@@ -1422,6 +1479,25 @@ Settings:AddSlider({ Title = T("ui_speed"), Min = 20, Max = 100, Default = 20,
 Settings:AddToggle({ Title = T("ui_auto_jump"), Default = true, Callback = function(v) Config.AutoSetJump = v end })
 Settings:AddSlider({ Title = T("ui_jump"), Min = 50, Max = 200, Default = 50,
     Callback = function(v) Config.Jump = v; if Humanoid then Humanoid.JumpPower = v end end })
+
+Settings:AddSection("PvP / Kill Aura")
+Settings:AddToggle({ Title = "Kill Aura", Default = false,
+    Callback = function(v)
+        Config.KillAura = v
+        Notify({ Title = v and "Kill Aura ON" or "Kill Aura OFF", Image = IMG, Type = v and "Warning" or "Info", Duration = 2 })
+    end })
+Settings:AddSlider({ Title = "Kill Aura Raio (studs)", Min = 100, Max = 5000, Default = 1000,
+    Callback = function(v) Config.KillAuraRadius = v end })
+Settings:AddToggle({ Title = "Auto Enable PvP", Default = false,
+    Callback = function(v)
+        Config.EnabledPvP = v
+        pcall(function() (CommF_ or {}):InvokeServer("EnablePvP", v) end)
+        Notify({ Title = v and "PvP ATIVADO" or "PvP Desativado", Image = IMG, Type = v and "Warning" or "Info", Duration = 2 })
+    end })
+Settings:AddToggle({ Title = "Aimbot (Gun)", Default = false,
+    Callback = function(v) Config.AimbotGun = v end })
+Settings:AddToggle({ Title = "Aimbot (Skills)", Default = false,
+    Callback = function(v) Config.AimbotSkill = v end })
 
 Settings:AddSection("Visual")
 local _uiScaleDebounce = nil
@@ -2050,7 +2126,7 @@ end)
 local FruitRaidTab = Window:MakeTab({ Title = T("tab_fruitraid"), Icon = "apple" })
 
 FruitRaidTab:AddSection("Fruit")
-FruitRaidTab:AddToggle({ Title = "Auto Random Fruit",         Default = false, Callback = function(v) _G.AutoRandomFruit   = v end })
+FruitRaidTab:AddToggle({ Title = "Auto Random Fruit", Default = false, Callback = function(v) Config.AutoTryLuck = v end })
 FruitRaidTab:AddToggle({ Title = "Auto Drop Fruit",           Default = false, Callback = function(v) _G.AutoDropFruit     = v end })
 FruitRaidTab:AddToggle({ Title = "Auto Store Fruit (guardar no storage)", Default = false,
     Callback = function(v)
@@ -2516,4 +2592,4 @@ Notify({
     Type        = "Success",
 })
 
-print("UI Loaded v2.3.5")
+print("UI Loaded v2.6.2")
